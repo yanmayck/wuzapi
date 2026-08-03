@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -652,6 +653,24 @@ func fileToBase64(filepath string) (string, string, error) {
 }
 
 func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+	// Um panic aqui derruba o processo Go inteiro, e com ele a conexão de
+	// WhatsApp de TODOS os usuários — não só a de quem mandou a mensagem
+	// problemática. O container reinicia (restart: on-failure) e todas as
+	// sessões precisam reconectar.
+	//
+	// Perder um evento é ruim; perder o gateway inteiro por causa de uma
+	// mensagem malformada é muito pior. Os exts[0] sem checagem já foram
+	// corrigidos; isto é a rede para o próximo caso desse tipo.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().
+				Interface("panic", r).
+				Str("userid", mycli.userID).
+				Bytes("stack", debug.Stack()).
+				Msg("PANIC no handler de eventos — evento descartado, gateway preservado")
+		}
+	}()
+
 	txtid := mycli.userID
 	postmap := make(map[string]interface{})
 	postmap["event"] = rawEvt
@@ -854,9 +873,18 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 					return
 				}
 
-				// Determine the file extension based on the MIME type
+				// Determine the file extension based on the MIME type.
+				// mime.ExtensionsByType devolve nil para mimetype desconhecido,
+				// e exts[0] em slice nil é panic. myEventHandler não tem
+				// recover(), então o processo Go inteiro cai — e com ele o
+				// WhatsApp de TODOS os tenants. Mesmo tratamento que os ramos
+				// de áudio/documento/figurinha já faziam.
 				exts, _ := mime.ExtensionsByType(img.GetMimetype())
-				tmpPath := filepath.Join(tmpDirectory, evt.Info.ID+exts[0])
+				ext := ".jpg"
+				if len(exts) > 0 {
+					ext = exts[0]
+				}
+				tmpPath := filepath.Join(tmpDirectory, evt.Info.ID+ext)
 
 				// Write the image to the temporary file
 				err = os.WriteFile(tmpPath, data, 0600)
@@ -1117,9 +1145,15 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 					return
 				}
 
-				// Determine the file extension based on the MIME type
+				// Ver o comentário no ramo de imagem: exts[0] sem checar
+				// tamanho é panic com mimetype desconhecido, e panic aqui
+				// derruba o processo inteiro.
 				exts, _ := mime.ExtensionsByType(video.GetMimetype())
-				tmpPath := filepath.Join(tmpDirectory, evt.Info.ID+exts[0])
+				ext := ".mp4"
+				if len(exts) > 0 {
+					ext = exts[0]
+				}
+				tmpPath := filepath.Join(tmpDirectory, evt.Info.ID+ext)
 
 				// Write the video to the temporary file
 				err = os.WriteFile(tmpPath, data, 0600)
