@@ -932,6 +932,23 @@ func fileToBase64(filepath string) (string, string, error) {
 }
 
 func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+	// myEventHandler roda direto no dispatch do whatsmeow (AddEventHandler),
+	// fora do safeGo. Um panic aqui derruba o processo Go inteiro, e com ele a
+	// conexao de WhatsApp de TODOS os usuarios - nao so a de quem mandou a
+	// mensagem problematica. O container reinicia e todas as sessoes reconectam.
+	//
+	// Perder um evento e ruim; perder o gateway inteiro por uma mensagem
+	// malformada e muito pior.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().
+				Interface("panic", r).
+				Str("userid", mycli.userID).
+				Str("stack", string(debug.Stack())).
+				Msg("PANIC no handler de eventos - evento descartado, gateway preservado")
+		}
+	}()
+
 	txtid := mycli.userID
 	postmap := make(map[string]interface{})
 	postmap["event"] = rawEvt
