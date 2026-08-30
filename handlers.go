@@ -7551,6 +7551,70 @@ func (s *server) SetPrivacySetting() http.HandlerFunc {
 	}
 }
 
+// GetUserPN resolves a LID (privacy identifier) back to the phone number.
+//
+// The mirror image of GetUserLID. Needed because message history addresses
+// chats by LID ("64369161441465@lid"), which is not dialable: without the
+// phone number a contact can be answered (WhatsApp routes by LID) but never
+// reached proactively - no campaigns, no re-engagement. whatsmeow already
+// keeps the mapping in whatsmeow_lid_map; this exposes it over the API so
+// clients don't have to read the database directly.
+func (s *server) GetUserPN() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		if clientManager.GetWhatsmeowClient(txtid) == nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
+			return
+		}
+
+		vars := mux.Vars(r)
+		lidParam := vars["lid"]
+
+		if lidParam == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing lid parameter"))
+			return
+		}
+
+		// Accept both "123@lid" and the bare identifier.
+		if !strings.Contains(lidParam, "@") {
+			lidParam = lidParam + "@lid"
+		}
+
+		lid, ok := parseJID(lidParam)
+		if !ok {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("invalid lid format"))
+			return
+		}
+
+		client := clientManager.GetWhatsmeowClient(txtid)
+
+		pn, err := client.Store.LIDs.GetPNForLID(context.Background(), lid)
+		if err != nil {
+			log.Error().Err(err).Str("lid", lidParam).Msg("Failed to get phone number for LID")
+			s.Respond(w, r, http.StatusNotFound, errors.New(fmt.Sprintf("phone number not found for this LID: %v", err)))
+			return
+		}
+
+		if pn.IsEmpty() {
+			s.Respond(w, r, http.StatusNotFound, errors.New("phone number not found for this LID"))
+			return
+		}
+
+		response := map[string]interface{}{
+			"lid": lid.String(),
+			"jid": pn.String(),
+		}
+
+		responseJson, err := json.Marshal(response)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, err)
+		} else {
+			s.Respond(w, r, http.StatusOK, string(responseJson))
+		}
+	}
+}
+
 // RequestUnavailableMessage requests a copy of a message that couldn't be decrypted
 func (s *server) RequestUnavailableMessage() http.HandlerFunc {
 
