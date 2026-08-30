@@ -99,6 +99,23 @@ var migrations = []Migration{
 		Name:  "add_days_to_sync_history",
 		UpSQL: addDaysToSyncHistorySQL,
 	},
+	{
+		// Reparo para bancos que rodaram o fork da ElloAI, onde o ID 9 foi
+		// gasto com add_days_to_sync_history antes de o upstream reivindicar
+		// esse mesmo ID para o indice de whatsmeow_message_secrets.
+		//
+		// applyMigrations pula por ID (migrations.go: "if _, ok :=
+		// applied[migration.ID]; !ok"), entao nesses bancos a migration 9 do
+		// upstream nunca roda e o indice nunca nasce — sem erro, so lentidao
+		// que cresce com o volume de mensagens. Mesmo padrao do ID 12, que o
+		// upstream criou para reparar o 10.
+		//
+		// CREATE INDEX IF NOT EXISTS: em banco novo (que ja ganhou o indice
+		// pela migration 9) isto e um no-op.
+		ID:    14,
+		Name:  "repair_message_secrets_idx",
+		UpSQL: addWhatsmeowMessageSecretsMessageIDIndexSQL,
+	},
 }
 
 const changeIDToStringSQL = `
@@ -540,6 +557,12 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 			_, err = tx.Exec(migration.UpSQL)
 		}
 	} else if migration.ID == 9 {
+		if db.DriverName() == "sqlite" {
+			err = nil
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 14 {
 		if db.DriverName() == "sqlite" {
 			err = nil
 		} else {
