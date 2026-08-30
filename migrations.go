@@ -86,6 +86,19 @@ var migrations = []Migration{
 		Name:  "repair_webhook_use_proxy",
 		UpSQL: repairWebhookUseProxySQL,
 	},
+	{
+		// Era ID 9 no fork; o upstream passou a usar 9 para
+		// add_whatsmeow_message_secrets_message_id_idx. Dois registros com o
+		// mesmo ID fazem o segundo nunca rodar (o primeiro ja marcou o ID como
+		// aplicado), em silencio. Renumerado para 13 - o 11 fica vago de proposito.
+		//
+		// A coluna e LIDA por wmiau.go (SELECT COALESCE(days_to_sync_history, 0)
+		// FROM users) mas nenhuma migration do upstream a cria - esta e a peca
+		// que falta para o history sync deles funcionar em instalacao nova.
+		ID:    13,
+		Name:  "add_days_to_sync_history",
+		UpSQL: addDaysToSyncHistorySQL,
+	},
 }
 
 const changeIDToStringSQL = `
@@ -253,6 +266,16 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS webhook_use_proxy BOOLEAN DEFAULT TRU
 // that already recorded a different migration 10 or 11 are repaired.
 const repairWebhookUseProxySQL = `
 ALTER TABLE users ADD COLUMN IF NOT EXISTS webhook_use_proxy BOOLEAN DEFAULT TRUE;
+`
+
+const addDaysToSyncHistorySQL = `
+-- PostgreSQL version
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'days_to_sync_history') THEN
+        ALTER TABLE users ADD COLUMN days_to_sync_history INTEGER DEFAULT 0;
+    END IF;
+END $$;
 `
 
 // GenerateRandomID creates a random string ID
@@ -519,6 +542,12 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 	} else if migration.ID == 9 {
 		if db.DriverName() == "sqlite" {
 			err = nil
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 13 {
+		if db.DriverName() == "sqlite" {
+			err = addColumnIfNotExistsSQLite(tx, "users", "days_to_sync_history", "INTEGER DEFAULT 0")
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}
